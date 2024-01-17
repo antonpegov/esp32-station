@@ -1,9 +1,11 @@
 #include "./blinkers.h"
 #include <Arduino.h>
 
+#define LOG false
+
 void blink(int pin, int highTime, int lowTime, int count, SemaphoreHandle_t mutex) {
     // Only print if we can take the mutex
-    if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+    if (LOG && xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
         Serial.println("LED" + String(pin) + " blinked " + String(count) + " times...");
         xSemaphoreGive(mutex);
     }
