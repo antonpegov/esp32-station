@@ -34,11 +34,13 @@ void blinkLed2Task(void *parameter) {
 
 void setup() {
     mutex = xSemaphoreCreateMutex();
+
     pinMode(LED1_Pin, OUTPUT);
     pinMode(LED2_Pin, OUTPUT);
-    pinMode(BUTTON1_Pin, INPUT_PULLUP);
-    pinMode(BUTTON2_Pin, INPUT_PULLUP);
-    pinMode(BUTTON3_Pin, INPUT_PULLUP);
+    pinMode(LED3_Pin, OUTPUT);
+    pinMode(BUTTON1_Pin, INPUT_PULLDOWN);
+    // pinMode(BUTTON2_Pin, INPUT_PULLUP);
+    // pinMode(BUTTON3_Pin, INPUT_PULLUP);
     Wire.begin(SDA_Pin, SCL_Pin);
     display.begin();
     display.setBrightness(DISPLAY_Brightness);
@@ -93,5 +95,15 @@ void loop() {
     data[4] = display.encodeASCII('°');
     data[5] = display.encodeASCII('C');
     display.setSegments(data);
-    delay(DISPLAY_Refresh);
+
+    // read the state of the button value:
+    int buttonState = digitalRead(BUTTON1_Pin);
+
+    // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
+    if (buttonState == HIGH) {
+        digitalWrite(LED3_Pin, HIGH);
+    } else {
+        digitalWrite(LED3_Pin, LOW);
+    }
+    delay(SHT31_Refresh);
 }
