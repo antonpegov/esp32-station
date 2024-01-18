@@ -1,3 +1,10 @@
 {
-  "cmake.configureOnOpen": false
+  "cmake.configureOnOpen": false,
+  "files.associations": {
+    "*.tcc": "cpp",
+    "cstdio": "cpp",
+    "array": "cpp",
+    "string": "cpp",
+    "string_view": "cpp"
+  }
 }
