@@ -10,10 +10,12 @@
 #include "helpers.h"
 
 // Define enum for all display modes
-enum DisplayMode { Temperature, Humidity, Time };
+enum DisplayMode { Temperature, Humidity };
 
 int led1Count = 0;
 int led2Count = 0;
+int displayMode = DisplayMode::Temperature;
+bool button1Flag = false;
 
 SemaphoreHandle_t mutex;
 Adafruit_SHT31 sht = Adafruit_SHT31();
@@ -21,6 +23,10 @@ TM1637TinyDisplay6 display(TM1637_CLK_Pin, TM1637_DIO_Pin);
 
 void blinkLed1Task(void *parameter);
 void blinkLed2Task(void *parameter);
+
+// Task handlers
+static TaskHandle_t blinkLed1TaskHandler = NULL;
+static TaskHandle_t blinkLed2TaskHandler = NULL;
 
 #pragma region Tasks
 void blinkLed1Task(void *parameter) {
@@ -60,8 +66,8 @@ void setup() {
         Serial.println("DISABLED");
 
     Serial.println(status("Starting Blink Tasks..."));
-    xTaskCreate(blinkLed1Task, "Blink LED 1", 10000, NULL, 3, NULL);
-    xTaskCreate(blinkLed2Task, "Blink LED 2", 10000, NULL, 3, NULL);
+    xTaskCreate(blinkLed1Task, "Blink LED 1", 10000, NULL, 3, &blinkLed1TaskHandler);
+    xTaskCreate(blinkLed2Task, "Blink LED 2", 10000, NULL, 3, &blinkLed2TaskHandler);
 }
 
 void loop() {
@@ -86,14 +92,25 @@ void loop() {
 
     uint8_t data[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     char array[10];
-    sprintf(array, "%f", t);
-    Serial.printf("Array: %s\n", array);
+
+    if (displayMode == DisplayMode::Temperature) {
+        sprintf(array, "%f", t);
+        Serial.printf("Array: %s\n", array);
+        data[0] = display.encodeDigit(array[0] - '0');
+        data[1] = display.encodeDigit(array[1] - '0') | 0x80;
+        data[2] = display.encodeDigit(array[3] - '0');
+        data[4] = display.encodeASCII('°');
+        data[5] = display.encodeASCII('C');
+    } else {
+        sprintf(array, "%f", h);
+        Serial.printf("Array: %s\n", array);
+        data[4] = display.encodeASCII('%');
+    }
+
     data[0] = display.encodeDigit(array[0] - '0');
     data[1] = display.encodeDigit(array[1] - '0') | 0x80;
     data[2] = display.encodeDigit(array[3] - '0');
-    data[5] = display.encodeASCII(' ');
-    data[4] = display.encodeASCII('°');
-    data[5] = display.encodeASCII('C');
+
     display.setSegments(data);
 
     // read the state of the button value:
@@ -102,8 +119,18 @@ void loop() {
     // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
     if (buttonState == HIGH) {
         digitalWrite(LED3_Pin, HIGH);
+        if (displayMode == DisplayMode::Temperature && button1Flag == false) {
+            displayMode = DisplayMode::Humidity;
+            vTaskSuspend(blinkLed1TaskHandler);
+        } else {
+            displayMode = DisplayMode::Temperature;
+            vTaskResume(blinkLed1TaskHandler);
+        }
+
+        button1Flag = true;
     } else {
         digitalWrite(LED3_Pin, LOW);
+        button1Flag = false;
     }
     delay(SHT31_Refresh);
 }

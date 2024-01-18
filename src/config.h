@@ -3,6 +3,7 @@
 #define BUTTON3_Pin 37
 #define BUTTONS_Refresh 10
 
+#define LOG_Blinks true
 #define LED1_Pin 20
 #define LED1_High 1000
 #define LED1_Low 5000
