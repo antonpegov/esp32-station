@@ -24,6 +24,10 @@ TM1637TinyDisplay6 display(TM1637_CLK_Pin, TM1637_DIO_Pin);
 void blinkLed1Task(void *parameter);
 void blinkLed2Task(void *parameter);
 
+// Queue handles
+static const uint8_t queue_lenght = 10;
+static QueueHandle_t buttonsQueue = NULL;
+
 // Task handlers
 static TaskHandle_t blinkLed1TaskHandler = NULL;
 static TaskHandle_t blinkLed2TaskHandler = NULL;
@@ -36,6 +40,38 @@ void blinkLed1Task(void *parameter) {
 void blinkLed2Task(void *parameter) {
     for (;;) blink(LED2_Pin, LED1_High, LED2_Low, ++led2Count, mutex);
 }
+void activitiIndicationLedTask(void *parameter) {
+    int button = 0;
+
+    for (;;) {
+        if (xQueueReceive(buttonsQueue, &button, portMAX_DELAY) == pdTRUE) {
+            if (button == 1) {
+                digitalWrite(LED3_Pin, HIGH);
+                Serial.println("Button pressed, LED3 on");
+            } else
+                digitalWrite(LED3_Pin, LOW);
+        }
+    }
+}
+
+void buttonsTask(void *parameter) {
+    int button = 0;
+
+    for (;;) {
+        int button1State = digitalRead(BUTTON1_Pin);
+
+        // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
+        button = button1State == HIGH ? 1 : 0;
+
+        // Send the button value to the queue
+        if (xQueueSend(buttonsQueue, &button, portMAX_DELAY) != pdTRUE) {
+            Serial.println(error("Queue full"));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(BUTTONS_Refresh));
+    }
+}
+
 #pragma endregion
 
 void setup() {
@@ -59,15 +95,16 @@ void setup() {
         while (1) delay(1);
     }
 
-    Serial.print("Heater Enabled State: ");
-    if (sht.isHeaterEnabled())
-        Serial.println("ENABLED");
-    else
-        Serial.println("DISABLED");
+    // Create the queue
+    buttonsQueue = xQueueCreate(queue_lenght, sizeof(int));
 
     Serial.println(status("Starting Blink Tasks..."));
-    xTaskCreate(blinkLed1Task, "Blink LED 1", 10000, NULL, 3, &blinkLed1TaskHandler);
-    xTaskCreate(blinkLed2Task, "Blink LED 2", 10000, NULL, 3, &blinkLed2TaskHandler);
+
+    // Create the tasks
+    xTaskCreate(blinkLed1Task, "Blink LED 1", 10000, NULL, 0, &blinkLed1TaskHandler);
+    xTaskCreate(blinkLed2Task, "Blink LED 2", 10000, NULL, 0, &blinkLed2TaskHandler);
+    xTaskCreate(activitiIndicationLedTask, "Activity LED", 10000, NULL, 3, NULL);
+    xTaskCreate(buttonsTask, "Buttons", 10000, NULL, 3, NULL);
 }
 
 void loop() {
@@ -113,24 +150,24 @@ void loop() {
 
     display.setSegments(data);
 
-    // read the state of the button value:
-    int buttonState = digitalRead(BUTTON1_Pin);
+    // // read the state of the button value:
+    // int buttonState = digitalRead(BUTTON1_Pin);
 
-    // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
-    if (buttonState == HIGH) {
-        digitalWrite(LED3_Pin, HIGH);
-        if (displayMode == DisplayMode::Temperature && button1Flag == false) {
-            displayMode = DisplayMode::Humidity;
-            vTaskSuspend(blinkLed1TaskHandler);
-        } else {
-            displayMode = DisplayMode::Temperature;
-            vTaskResume(blinkLed1TaskHandler);
-        }
+    // // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
+    // if (buttonState == HIGH) {
+    //     digitalWrite(LED3_Pin, HIGH);
+    //     if (displayMode == DisplayMode::Temperature && button1Flag == false) {
+    //         displayMode = DisplayMode::Humidity;
+    //         vTaskSuspend(blinkLed2TaskHandler);
+    //     } else {
+    //         displayMode = DisplayMode::Temperature;
+    //         vTaskResume(blinkLed2TaskHandler);
+    //     }
 
-        button1Flag = true;
-    } else {
-        digitalWrite(LED3_Pin, LOW);
-        button1Flag = false;
-    }
+    //     button1Flag = true;
+    // } else {
+    //     digitalWrite(LED3_Pin, LOW);
+    //     button1Flag = false;
+    // }
     delay(SHT31_Refresh);
 }
