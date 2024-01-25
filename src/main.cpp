@@ -9,24 +9,24 @@
 #include "display.h"
 #include "helpers.h"
 
-// Define enum for all display modes
-enum DisplayMode { Temperature, Humidity };
+enum Display { Temp, Humi };
+struct SensorData {
+    float temperature;
+    float humidity;
+};
 
+// TODO: Remove global variables
 int led1Count = 0;
 int led2Count = 0;
-int displayMode = DisplayMode::Temperature;
-bool button1Flag = false;
 
 SemaphoreHandle_t mutex;
 Adafruit_SHT31 sht = Adafruit_SHT31();
 TM1637TinyDisplay6 display(TM1637_CLK_Pin, TM1637_DIO_Pin);
 
-void blinkLed1Task(void *parameter);
-void blinkLed2Task(void *parameter);
-
 // Queue handles
 static const uint8_t queue_lenght = 10;
 static QueueHandle_t buttonsQueue = NULL;
+static QueueHandle_t sensorQueue = NULL;
 
 // Task handlers
 static TaskHandle_t blinkLed1TaskHandler = NULL;
@@ -40,6 +40,7 @@ void blinkLed1Task(void *parameter) {
 void blinkLed2Task(void *parameter) {
     for (;;) blink(LED2_Pin, LED1_High, LED2_Low, ++led2Count, mutex);
 }
+
 void activitiIndicationLedTask(void *parameter) {
     int button = 0;
 
@@ -47,7 +48,6 @@ void activitiIndicationLedTask(void *parameter) {
         if (xQueueReceive(buttonsQueue, &button, portMAX_DELAY) == pdTRUE) {
             if (button == 1) {
                 digitalWrite(LED3_Pin, HIGH);
-                Serial.println("Button pressed, LED3 on");
             } else
                 digitalWrite(LED3_Pin, LOW);
         }
@@ -58,18 +58,93 @@ void buttonsTask(void *parameter) {
     int button = 0;
 
     for (;;) {
-        int button1State = digitalRead(BUTTON1_Pin);
-
-        // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
-        button = button1State == HIGH ? 1 : 0;
+        button = digitalRead(BUTTON1_Pin) == HIGH ? 1 : 0;
 
         // Send the button value to the queue
         if (xQueueSend(buttonsQueue, &button, portMAX_DELAY) != pdTRUE) {
-            Serial.println(error("Queue full"));
+            if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+                Serial.println(error("Queue full"));
+                xSemaphoreGive(mutex);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(BUTTONS_Refresh));
     }
+}
+
+void sensorTask(void *parameter) {
+    SensorData data;
+
+    for (;;) {
+        data.temperature = sht.readTemperature();
+        data.humidity = sht.readHumidity();
+
+        // Println the data to the serial monitor
+        if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+            Serial.print("Temperature: " + String(data.temperature) + "°C\t\t");
+            Serial.println("Humidity: " + String(data.humidity) + "%");
+            xSemaphoreGive(mutex);
+        }
+
+        if (isnan(data.humidity)) {
+            if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+                Serial.println(error("Failed to read humidity"));
+                xSemaphoreGive(mutex);
+            }
+        } else if (isnan(data.temperature)) {
+            if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+                Serial.println(error("Failed to read temperature"));
+                xSemaphoreGive(mutex);
+            }
+        } else if (xQueueOverwrite(sensorQueue, &data) != pdTRUE) {
+            if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+                Serial.println(error("Sensor data not sent to queue"));
+                xSemaphoreGive(mutex);
+            }
+        }
+        xQueueOverwrite(sensorQueue, &data);
+
+        vTaskDelay(pdMS_TO_TICKS(SHT31_Refresh));
+    }
+}
+
+void displayTask(void *parameter) {
+    Display mode = Display::Temp;
+    uint8_t segments[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    SensorData data;
+    char array[10];
+    int button = 0;
+
+    for (;;) {
+        if (xQueueReceive(buttonsQueue, &button, portMAX_DELAY) == pdTRUE) {
+            if (button == 1) {
+                mode = mode == Display::Temp ? Display::Humi : Display::Temp;
+            }
+        }
+
+        if (xQueueReceive(sensorQueue, &data, portMAX_DELAY) == pdTRUE) {
+            if (mode == Display::Temp) {
+                sprintf(array, "%f", data.temperature);
+                Serial.printf("Array: %s\n", array);
+                segments[0] = display.encodeDigit(array[0] - '0');
+                segments[1] = display.encodeDigit(array[1] - '0') | 0x80;
+                segments[2] = display.encodeDigit(array[3] - '0');
+                segments[4] = display.encodeASCII('°');
+                segments[5] = display.encodeASCII('C');
+            } else {
+                sprintf(array, "%f", data.humidity);
+                Serial.printf("Array: %s\n", array);
+                segments[4] = display.encodeASCII('%');
+            }
+
+            segments[0] = display.encodeDigit(array[0] - '0');
+            segments[1] = display.encodeDigit(array[1] - '0') | 0x80;
+            segments[2] = display.encodeDigit(array[3] - '0');
+            display.setSegments(segments);
+        }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(DISPLAY_Refresh));
 }
 
 #pragma endregion
@@ -89,85 +164,29 @@ void setup() {
     Serial.begin(SERIAL_Baud);
     delay(1000);
 
-    Serial.println("SHT31 test");
     if (!sht.begin(SHT31_Address)) { // Set to 0x45 for alternate i2c addr
         Serial.println("Couldn't find SHT31");
         while (1) delay(1);
     }
 
-    // Create the queue
+    // Create the queues
     buttonsQueue = xQueueCreate(queue_lenght, sizeof(int));
+    sensorQueue = xQueueCreate(1, sizeof(SensorData));
 
-    Serial.println(status("Starting Blink Tasks..."));
+    if (sensorQueue == NULL) {
+        if (xSemaphoreTake(mutex, (TickType_t)10) == pdTRUE) {
+            Serial.println(error("Sensor queue creation failed"));
+            xSemaphoreGive(mutex);
+        }
+    }
 
     // Create the tasks
     xTaskCreate(blinkLed1Task, "Blink LED 1", 10000, NULL, 0, &blinkLed1TaskHandler);
     xTaskCreate(blinkLed2Task, "Blink LED 2", 10000, NULL, 0, &blinkLed2TaskHandler);
-    xTaskCreate(activitiIndicationLedTask, "Activity LED", 10000, NULL, 3, NULL);
-    xTaskCreate(buttonsTask, "Buttons", 10000, NULL, 3, NULL);
+    xTaskCreate(activitiIndicationLedTask, "Activity LED", 10000, NULL, 1, NULL);
+    xTaskCreate(buttonsTask, "Buttons", 10000, NULL, 1, NULL);
+    xTaskCreate(sensorTask, "Sensor", 10000, NULL, 1, NULL);
+    xTaskCreate(displayTask, "Display", 10000, NULL, 1, NULL);
 }
 
-void loop() {
-    float t = sht.readTemperature();
-    float h = sht.readHumidity();
-    char tempStr[10];
-
-    if (!isnan(t)) { // check if 'is not a number'
-        Serial.print("Temp *C = ");
-        Serial.print(t);
-        Serial.print("\t\t");
-    } else {
-        Serial.println("Failed to read temperature");
-    }
-
-    if (!isnan(h)) { // check if 'is not a number'
-        Serial.print("Hum. % = ");
-        Serial.println(h);
-    } else {
-        Serial.println("Failed to read humidity");
-    }
-
-    uint8_t data[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    char array[10];
-
-    if (displayMode == DisplayMode::Temperature) {
-        sprintf(array, "%f", t);
-        Serial.printf("Array: %s\n", array);
-        data[0] = display.encodeDigit(array[0] - '0');
-        data[1] = display.encodeDigit(array[1] - '0') | 0x80;
-        data[2] = display.encodeDigit(array[3] - '0');
-        data[4] = display.encodeASCII('°');
-        data[5] = display.encodeASCII('C');
-    } else {
-        sprintf(array, "%f", h);
-        Serial.printf("Array: %s\n", array);
-        data[4] = display.encodeASCII('%');
-    }
-
-    data[0] = display.encodeDigit(array[0] - '0');
-    data[1] = display.encodeDigit(array[1] - '0') | 0x80;
-    data[2] = display.encodeDigit(array[3] - '0');
-
-    display.setSegments(data);
-
-    // // read the state of the button value:
-    // int buttonState = digitalRead(BUTTON1_Pin);
-
-    // // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
-    // if (buttonState == HIGH) {
-    //     digitalWrite(LED3_Pin, HIGH);
-    //     if (displayMode == DisplayMode::Temperature && button1Flag == false) {
-    //         displayMode = DisplayMode::Humidity;
-    //         vTaskSuspend(blinkLed2TaskHandler);
-    //     } else {
-    //         displayMode = DisplayMode::Temperature;
-    //         vTaskResume(blinkLed2TaskHandler);
-    //     }
-
-    //     button1Flag = true;
-    // } else {
-    //     digitalWrite(LED3_Pin, LOW);
-    //     button1Flag = false;
-    // }
-    delay(SHT31_Refresh);
-}
+void loop() {}

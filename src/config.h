@@ -21,4 +21,4 @@
 #define SDA_Pin 15
 #define SCL_Pin 16
 #define SHT31_Address 0x44
-#define SHT31_Refresh 100
+#define SHT31_Refresh 1000
